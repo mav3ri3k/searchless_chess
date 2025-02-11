@@ -31,36 +31,19 @@ import numpy as np
 from jax.experimental import io_callback
 from searchless_chess.src import constants
 
-def save_activations_to_json(activations, filename="activations.json"):
-    """Appends neuron activations to a JSON file with an incrementing index."""
-    # Convert activations to serializable lists (activations are expected to be concrete NumPy arrays)
-    activations_serializable = {
-        layer: np.array(act).tolist() for layer, act in activations.items()
-    }
-    
-    # Load existing data if the file exists
+def save_activations_to_npz(activations, filename="activations.npz"):
+    # activations is assumed to be a dictionary of concrete NumPy arrays.
+    # Load existing data if any.
     if os.path.exists(filename):
-        with open(filename, "r") as f:
-            try:
-                existing_data = json.load(f)
-            except json.JSONDecodeError:
-                existing_data = {}
+        existing = dict(np.load(filename, allow_pickle=True))
     else:
-        existing_data = {}
+        existing = {"index": 0}
+    
+    current_index = int(existing.get("index", 0))
+    existing[str(current_index)] = activations
+    existing["index"] = current_index + 1
+    np.savez(filename, **existing)
 
-    # If the 'index' key doesn't exist, initialize it to 0
-    if "index" not in existing_data:
-        current_index = 0
-    else:
-        current_index = existing_data["index"]
-
-    # Store new activations under the key equal to the current index (as a string)
-    existing_data[str(current_index)] = activations_serializable
-    # Increment the index and store it back
-    existing_data["index"] = current_index + 1
-
-    with open(filename, "w") as f:
-        json.dump(existing_data, f, indent=4)
 
 def log_activations_callback(activations):
     """
@@ -69,7 +52,7 @@ def log_activations_callback(activations):
     """
     # Convert all jax.Array values to concrete NumPy arrays.
     activations_np = jax.tree_map(lambda x: np.array(x), activations)
-    save_activations_to_json(activations_np, "activations.json")
+    save_activations_to_npz(activations_np, "activations.json")
 
 
 class PositionalEncodings(enum.Enum):
@@ -338,9 +321,9 @@ def build_transformer_predictor(
         
         # Use io_callback to log activations.
         # This call schedules log_activations_callback to run on the host with concrete values.
-        _ = io_callback(log_activations_callback, None, activations)
+        # _ = io_callback(log_activations_callback, None, activations)
         
         # Return logits unchanged.
-        return logits
+        return logits, activations
 
     return constants.Predictor(initial_params=model.init, predict=wrapped_predict)

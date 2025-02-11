@@ -87,9 +87,11 @@ class ActionValueEngine(NeuralEngine):
         [sequences, legal_actions, dummy_return_buckets],
         axis=1,
     )
-    return {'log_probs': self.predict_fn(sequences)[:, -1], 'fen': board.fen()}
+    logits, activations = self.predict_fn(sequences)
+    return {'log_probs': logits[:, -1], 'fen': board.fen(), "activations": activations}
 
   def play(self, board: chess.Board) -> chess.Move:
+    analysis = self.analyse(board)
     return_buckets_log_probs = self.analyse(board)['log_probs']
     return_buckets_probs = np.exp(return_buckets_log_probs)
     win_probs = np.inner(return_buckets_probs, self._return_buckets_values)
@@ -100,6 +102,10 @@ class ActionValueEngine(NeuralEngine):
       return self._rng.choice(sorted_legal_moves, p=probs)
     else:
       best_index = np.argmax(win_probs)
+      print("Best Index: ", best_index)
+      print("Best Move: ", sorted_legal_moves[best_index])
+      print("Prob: ", return_buckets_log_probs[best_index])
+      print("Activations: ", analysis["activations"][best_index])
       return sorted_legal_moves[best_index]
 
 
@@ -218,11 +224,14 @@ def wrap_predict_fn(
     padded = np.pad(sequences, ((0, remainder), (0, 0)))
     sequences_split = np.split(padded, len(padded) // batch_size)
     all_outputs = []
+    all_activations = []
     for sub_sequences in sequences_split:
-      all_outputs.append(fixed_predict_fn(sub_sequences))
+      val = fixed_predict_fn(sub_sequences)
+      all_activations.append(val[1])
+      all_outputs.append(val[0])
     outputs = np.concatenate(all_outputs, axis=0)
     assert len(outputs) == len(padded)
-    return outputs[: len(sequences)]  # Crop the padded sequences.
+    return outputs[: len(sequences)], all_activations[: len(sequences)]  # Crop the padded sequences.
 
   return predict_fn
 
