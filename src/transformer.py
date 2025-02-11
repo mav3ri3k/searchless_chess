@@ -13,6 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
+import os
+import json
+
 """Transformer model."""
 
 import dataclasses
@@ -25,7 +28,48 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import numpy as np
 
+from jax.experimental import io_callback
 from searchless_chess.src import constants
+
+def save_activations_to_json(activations, filename="activations.json"):
+    """Appends neuron activations to a JSON file with an incrementing index."""
+    # Convert activations to serializable lists (activations are expected to be concrete NumPy arrays)
+    activations_serializable = {
+        layer: np.array(act).tolist() for layer, act in activations.items()
+    }
+    
+    # Load existing data if the file exists
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            try:
+                existing_data = json.load(f)
+            except json.JSONDecodeError:
+                existing_data = {}
+    else:
+        existing_data = {}
+
+    # If the 'index' key doesn't exist, initialize it to 0
+    if "index" not in existing_data:
+        current_index = 0
+    else:
+        current_index = existing_data["index"]
+
+    # Store new activations under the key equal to the current index (as a string)
+    existing_data[str(current_index)] = activations_serializable
+    # Increment the index and store it back
+    existing_data["index"] = current_index + 1
+
+    with open(filename, "w") as f:
+        json.dump(existing_data, f, indent=4)
+
+def log_activations_callback(activations):
+    """
+    Callback to save activations.
+    activations: A pytree of jax.Array values.
+    """
+    # Convert all jax.Array values to concrete NumPy arrays.
+    activations_np = jax.tree_map(lambda x: np.array(x), activations)
+    save_activations_to_json(activations_np, "activations.json")
 
 
 class PositionalEncodings(enum.Enum):
@@ -261,24 +305,42 @@ def transformer_decoder(
   embeddings = embed_sequences(inputs, config)
 
   h = embeddings
-  for _ in range(config.num_layers):
+  activations = {}
+  for layer_idx in range(config.num_layers):
     attention_input = layer_norm(h)
     attention = _attention_block(attention_input, config)
     h += attention
+    activations[f'layer_{layer_idx}_attention'] = attention
 
     mlp_input = layer_norm(h)
     mlp_output = _mlp_block(mlp_input, config)
     h += mlp_output
+    activations[f'layer_{layer_idx}_mlp'] = mlp_output
 
   if config.apply_post_ln:
     h = layer_norm(h)
   logits = hk.Linear(config.output_size)(h)
-  return jnn.log_softmax(logits, axis=-1)
+
+  return jnn.log_softmax(logits, axis=-1), activations
 
 
 def build_transformer_predictor(
     config: TransformerConfig,
 ) -> constants.Predictor:
-  """Returns a transformer predictor."""
-  model = hk.transform(functools.partial(transformer_decoder, config=config))
-  return constants.Predictor(initial_params=model.init, predict=model.apply)
+    """Returns a transformer predictor with activations logging via io_callback."""
+    
+    # Transform the model with Haiku.
+    model = hk.transform(functools.partial(transformer_decoder, config=config))
+
+    def wrapped_predict(params, rng, targets, **kwargs):
+        # Run the model.
+        logits, activations = model.apply(params, rng, targets, **kwargs)
+        
+        # Use io_callback to log activations.
+        # This call schedules log_activations_callback to run on the host with concrete values.
+        _ = io_callback(log_activations_callback, None, activations)
+        
+        # Return logits unchanged.
+        return logits
+
+    return constants.Predictor(initial_params=model.init, predict=wrapped_predict)
