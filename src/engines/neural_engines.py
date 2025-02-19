@@ -105,6 +105,7 @@ class ActionValueEngine(NeuralEngine):
       print("Best Index: ", best_index)
       print("Best Move: ", sorted_legal_moves[best_index])
       print("Prob: ", return_buckets_log_probs[best_index])
+      print("Shape of Activations: ", analysis["activations"][best_index]["layer_0_mlp"].shape)
       print("Activations: ", analysis["activations"][best_index])
       return sorted_legal_moves[best_index]
 
