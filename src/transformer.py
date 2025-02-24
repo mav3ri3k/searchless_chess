@@ -300,9 +300,21 @@ def transformer_decoder(
     h += mlp_output
     activations[f'layer_{layer_idx}_mlp'] = mlp_output
 
+  hk_ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
   if config.apply_post_ln:
-    h = layer_norm(h)
-  logits = hk.Linear(config.output_size)(h)
+    h = hk_ln(h)
+
+  hk_l = hk.Linear(config.output_size)
+  logits = hk_l(h)
+
+  for layer_idx in range(config.num_layers):
+    h = activations[f'layer_{layer_idx}_mlp']
+    if config.apply_post_ln:
+        h = hk_ln(h)
+
+    pseudo_logits = hk_l(h)
+   
+    activations[f'layer_{layer_idx}_mlp'] = jnn.log_softmax(pseudo_logits, axis=-1)
 
   return jnn.log_softmax(logits, axis=-1), activations
 
